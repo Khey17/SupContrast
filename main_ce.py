@@ -8,6 +8,7 @@ import math
 
 import tensorboard_logger as tb_logger
 import torch
+torch.cuda.empty_cache()
 import torch.backends.cudnn as cudnn
 from torchvision import transforms, datasets
 
@@ -16,11 +17,11 @@ from util import adjust_learning_rate, warmup_learning_rate, accuracy
 from util import set_optimizer, save_model
 from networks.resnet_big import SupCEResNet
 
-try:
-    import apex
-    from apex import amp, optimizers
-except ImportError:
-    pass
+# try:
+#     import apex
+#     from apex import amp, optimizers
+# except ImportError:
+#     pass
 
 
 def parse_option():
@@ -30,15 +31,15 @@ def parse_option():
                         help='print frequency')
     parser.add_argument('--save_freq', type=int, default=50,
                         help='save frequency')
-    parser.add_argument('--batch_size', type=int, default=256,
+    parser.add_argument('--batch_size', type=int, default=32,
                         help='batch_size')
-    parser.add_argument('--num_workers', type=int, default=16,
+    parser.add_argument('--num_workers', type=int, default=10,
                         help='num of workers to use')
-    parser.add_argument('--epochs', type=int, default=500,
+    parser.add_argument('--epochs', type=int, default=10,
                         help='number of training epochs')
 
     # optimization
-    parser.add_argument('--learning_rate', type=float, default=0.2,
+    parser.add_argument('--learning_rate', type=float, default=0.005,
                         help='learning rate')
     parser.add_argument('--lr_decay_epochs', type=str, default='350,400,450',
                         help='where to decay lr, can be a list')
@@ -172,8 +173,8 @@ def set_model(opt):
     criterion = torch.nn.CrossEntropyLoss()
 
     # enable synchronized Batch Normalization
-    if opt.syncBN:
-        model = apex.parallel.convert_syncbn_model(model)
+    # if opt.syncBN:
+    #     model = apex.parallel.convert_syncbn_model(model)
 
     if torch.cuda.is_available():
         if torch.cuda.device_count() > 1:

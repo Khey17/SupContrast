@@ -15,7 +15,8 @@ from torchvision import transforms, datasets
 from util import AverageMeter
 from util import adjust_learning_rate, warmup_learning_rate, accuracy
 from util import set_optimizer, save_model
-from networks.resnet_big import SupCEResNet
+# from networks.resnet_big import SupCEResNet
+from models.backbone import ResNet_18
 
 # try:
 #     import apex
@@ -29,31 +30,33 @@ def parse_option():
 
     parser.add_argument('--print_freq', type=int, default=10,
                         help='print frequency')
-    parser.add_argument('--save_freq', type=int, default=50,
+    parser.add_argument('--save_freq', type=int, default=25,
                         help='save frequency')
-    parser.add_argument('--batch_size', type=int, default=32,
+    parser.add_argument('--batch_size', type=int, default=64,
                         help='batch_size')
-    parser.add_argument('--num_workers', type=int, default=10,
+    parser.add_argument('--num_workers', type=int, default=8,
                         help='num of workers to use')
-    parser.add_argument('--epochs', type=int, default=10,
+    parser.add_argument('--epochs', type=int, default=100,
                         help='number of training epochs')
 
     # optimization
-    parser.add_argument('--learning_rate', type=float, default=0.005,
+    parser.add_argument('--learning_rate', type=float, default=0.01,
                         help='learning rate')
-    parser.add_argument('--lr_decay_epochs', type=str, default='350,400,450',
+    parser.add_argument('--lr_decay_epochs', type=str, default='25,50,75',
                         help='where to decay lr, can be a list')
-    parser.add_argument('--lr_decay_rate', type=float, default=0.1,
+    parser.add_argument('--lr_decay_rate', type=float, default=0.5,
                         help='decay rate for learning rate')
     parser.add_argument('--weight_decay', type=float, default=1e-4,
                         help='weight decay')
-    parser.add_argument('--momentum', type=float, default=0.9,
+    parser.add_argument('--momentum', type=float, default=0.95,
                         help='momentum')
 
     # model dataset
     parser.add_argument('--model', type=str, default='resnet50')
-    parser.add_argument('--dataset', type=str, default='cifar10',
-                        choices=['cifar10', 'cifar100'], help='dataset')
+    parser.add_argument('--dataset', type=str, default='fer2013',
+                        choices=['fer2013', 'cifar10', 'cifar100'], help='dataset')
+    parser.add_argument('--use_pretrained', action='store_true', default=True,
+                        help='use pretrained model')
 
     # other setting
     parser.add_argument('--cosine', action='store_true',
@@ -76,6 +79,21 @@ def parse_option():
     opt.lr_decay_epochs = list([])
     for it in iterations:
         opt.lr_decay_epochs.append(int(it))
+
+    if opt.use_pretrained:
+        if opt.dataset == 'fer2013':
+            opt.n_cls = 5
+        else:
+            raise ValueError('pretrained model not available for the specified dataset: {}'.format(opt.dataset))
+    else:
+        if opt.dataset == 'cifar10':
+            opt.n_cls = 10
+        elif opt.dataset == 'cifar100':
+            opt.n_cls = 100
+        elif opt.dataset == 'fer2013':
+            opt.n_cls = 5
+        else:
+            raise ValueError('dataset not supported: {}'.format(opt.dataset))
 
     opt.model_name = 'SupCE_{}_{}_lr_{}_decay_{}_bsz_{}_trial_{}'.\
         format(opt.dataset, opt.model, opt.learning_rate, opt.weight_decay,
@@ -106,13 +124,6 @@ def parse_option():
     if not os.path.isdir(opt.save_folder):
         os.makedirs(opt.save_folder)
 
-    if opt.dataset == 'cifar10':
-        opt.n_cls = 10
-    elif opt.dataset == 'cifar100':
-        opt.n_cls = 100
-    else:
-        raise ValueError('dataset not supported: {}'.format(opt.dataset))
-
     return opt
 
 
@@ -124,6 +135,9 @@ def set_loader(opt):
     elif opt.dataset == 'cifar100':
         mean = (0.5071, 0.4867, 0.4408)
         std = (0.2675, 0.2565, 0.2761)
+    elif opt.dataset == 'fer2013':
+        mean = [0.5]
+        std = [0.5]
     else:
         raise ValueError('dataset not supported: {}'.format(opt.dataset))
     normalize = transforms.Normalize(mean=mean, std=std)
@@ -154,6 +168,10 @@ def set_loader(opt):
         val_dataset = datasets.CIFAR100(root=opt.data_folder,
                                         train=False,
                                         transform=val_transform)
+    elif opt.dataset == 'fer2013':
+        train_dataset = datasets.ImageFolder(root='./datasets/fer2013/FERPlus/train',
+                                                         transform=train_transform)
+        val_dataset = datasets.ImageFolder(root='./datasets/fer2013/FERPlus/test', transform=val_transform)
     else:
         raise ValueError(opt.dataset)
 
@@ -169,7 +187,7 @@ def set_loader(opt):
 
 
 def set_model(opt):
-    model = SupCEResNet(name=opt.model, num_classes=opt.n_cls)
+    model = ResNet_18(num_classes=opt.n_cls)
     criterion = torch.nn.CrossEntropyLoss()
 
     # enable synchronized Batch Normalization
@@ -207,12 +225,12 @@ def train(train_loader, model, criterion, optimizer, epoch, opt):
         warmup_learning_rate(opt, epoch, idx, len(train_loader), optimizer)
 
         # compute loss
-        output = model(images)
-        loss = criterion(output, labels)
+        predicted_classes, _ = model(images)  # only use the predicted_classes element of the output tuple
+        loss = criterion(predicted_classes, labels)
 
         # update metric
         losses.update(loss.item(), bsz)
-        acc1, acc5 = accuracy(output, labels, topk=(1, 5))
+        acc1, acc5 = accuracy(predicted_classes, labels, topk=(1, 5))  # pass predicted_classes instead of output
         top1.update(acc1[0], bsz)
 
         # SGD
@@ -238,6 +256,7 @@ def train(train_loader, model, criterion, optimizer, epoch, opt):
     return losses.avg, top1.avg
 
 
+
 def validate(val_loader, model, criterion, opt):
     """validation"""
     model.eval()
@@ -255,7 +274,9 @@ def validate(val_loader, model, criterion, opt):
 
             # forward
             output = model(images)
-            loss = criterion(output, labels)
+            predicted_classes, _ = output
+            loss = criterion(predicted_classes, labels)
+
 
             # update metric
             losses.update(loss.item(), bsz)

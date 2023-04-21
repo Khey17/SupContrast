@@ -24,21 +24,21 @@ from networks.resnet_big import SupConResNet, LinearClassifier
 def parse_option():
     parser = argparse.ArgumentParser('argument for training')
 
-    parser.add_argument('--print_freq', type=int, default=100,
+    parser.add_argument('--print_freq', type=int, default=10,
                         help='print frequency')
-    parser.add_argument('--save_freq', type=int, default=150,
+    parser.add_argument('--save_freq', type=int, default=25,
                         help='save frequency')
     parser.add_argument('--batch_size', type=int, default=64,
                         help='batch_size')
     parser.add_argument('--num_workers', type=int, default=10,
                         help='num of workers to use')
-    parser.add_argument('--epochs', type=int, default=20,
+    parser.add_argument('--epochs', type=int, default=100,
                         help='number of training epochs')
 
     # optimization
-    parser.add_argument('--learning_rate', type=float, default=0.005,
+    parser.add_argument('--learning_rate', type=float, default=0.01,
                         help='learning rate')
-    parser.add_argument('--lr_decay_epochs', type=str, default='60,75,90',
+    parser.add_argument('--lr_decay_epochs', type=str, default='25,50,75',
                         help='where to decay lr, can be a list')
     parser.add_argument('--lr_decay_rate', type=float, default=0.2,
                         help='decay rate for learning rate')
@@ -49,8 +49,11 @@ def parse_option():
 
     # model dataset
     parser.add_argument('--model', type=str, default='resnet50')
-    parser.add_argument('--dataset', type=str, default='cifar10',
-                        choices=['cifar10', 'cifar100'], help='dataset')
+    parser.add_argument('--dataset', type=str, default='fer2013',
+                        choices=['fer2013', 'cifar10', 'cifar100'], help='dataset')
+    path = '/Users/Karth/Downloads/SupContrast-master/models/resnet18_msceleb.pth'
+    parser.add_argument('--pretrained_path', type=str, default=path,
+                        help='path to pretrained model')
 
     # other setting
     parser.add_argument('--cosine', action='store_true',
@@ -69,7 +72,9 @@ def parse_option():
     iterations = opt.lr_decay_epochs.split(',')
     opt.lr_decay_epochs = list([])
     for it in iterations:
-        opt.lr_decay_epochs.append(int(it))
+        if it:
+            opt.lr_decay_epochs.append(int(it))
+
 
     opt.model_name = '{}_{}_lr_{}_decay_{}_bsz_{}'.\
         format(opt.dataset, opt.model, opt.learning_rate, opt.weight_decay,
@@ -94,6 +99,8 @@ def parse_option():
         opt.n_cls = 10
     elif opt.dataset == 'cifar100':
         opt.n_cls = 100
+    elif opt.dataset == 'fer2013':
+        opt.n_cls = 5
     else:
         raise ValueError('dataset not supported: {}'.format(opt.dataset))
 
@@ -101,20 +108,19 @@ def parse_option():
 
 
 def set_model(opt):
-    model = SupConResNet(name=opt.model)
+    model = SupConResNet(name='resnet18')
     criterion = torch.nn.CrossEntropyLoss()
 
-    classifier = LinearClassifier(name=opt.model, num_classes=opt.n_cls)
+    # Load pre-trained weights
+    pretrained_dict = torch.load(opt.pretrained_path)['state_dict']
+    model_dict = model.state_dict()
+    pretrained_dict = {k.replace('encoder.', ''): v for k, v in pretrained_dict.items() if k.replace('encoder.', '') in model_dict}
+    model_dict.update(pretrained_dict)
+    model.load_state_dict(model_dict)
 
-    # Initialize the model and classifier weights randomly
-    for m in model.modules():
-        if isinstance(m, torch.nn.Conv2d):
-            torch.nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-            if m.bias is not None:
-                torch.nn.init.constant_(m.bias, 0)
-        elif isinstance(m, torch.nn.BatchNorm2d):
-            torch.nn.init.constant_(m.weight, 1)
-            torch.nn.init.constant_(m.bias, 0)
+    classifier = LinearClassifier(name='resnet18', num_classes=opt.n_cls)
+
+    # Initialize the classifier weights randomly
     for m in classifier.modules():
         if isinstance(m, torch.nn.Linear):
             torch.nn.init.normal_(m.weight, 0, 0.01)
@@ -131,7 +137,6 @@ def set_model(opt):
             cudnn.benchmark = True
 
     return model, classifier, criterion
-
 
 
 def train(train_loader, model, classifier, criterion, optimizer, epoch, opt):
